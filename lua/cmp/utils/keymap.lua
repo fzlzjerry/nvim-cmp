@@ -119,6 +119,36 @@ keymap.equals = function(a, b)
   return keymap.normalize(a) == keymap.normalize(b)
 end
 
+---Return whether text before the cursor matches a defined abbreviation.
+---@param mode string
+---@return boolean
+keymap.has_abbreviation = function(mode)
+  if (mode ~= 'i' and mode ~= 'c') or api.get_mode() ~= mode then
+    return false
+  end
+
+  local text = vim.fn.matchstr(api.get_cursor_before_line(), [[\S\+$]])
+  if text == '' then
+    return false
+  end
+
+  local is_keyword = function(char)
+    return vim.fn.match(char, [[\k]]) == 0
+  end
+
+  local count = vim.fn.strchars(text)
+  -- A keyword-ending abbreviation is either all keyword characters or non-keyword characters plus the final one.
+  if count > 1 and is_keyword(vim.fn.strcharpart(text, count - 1, 1)) then
+    if is_keyword(vim.fn.strcharpart(text, count - 2, 1)) then
+      text = vim.fn.matchstr(text, [[\k\+$]])
+    else
+      text = vim.fn.matchstr(text, [[\%(\k\@!\S\)\+\k$]])
+    end
+  end
+
+  return next(vim.fn.maparg(text, mode, true, true)) ~= nil
+end
+
 ---Register keypress handler.
 keymap.listen = function(mode, lhs, callback)
   lhs = keymap.normalize(keymap.to_keymap(lhs))
@@ -180,6 +210,11 @@ keymap.solve = function(bufnr, mode, map)
     else
       rhs = vim.api.nvim_eval(keymap.t(map.rhs))
     end
+  end
+
+  if map.default and keymap.has_abbreviation(mode) then
+    -- `noremap` suppresses abbreviations, so explicitly expand one before a default fallback.
+    rhs = keymap.t('<C-]>') .. rhs
   end
 
   if map.noremap then
@@ -254,6 +289,7 @@ keymap.get_map = function(mode, lhs)
     nowait = false,
     buffer = false,
     replace_keycodes = true,
+    default = true,
   }
 end
 
