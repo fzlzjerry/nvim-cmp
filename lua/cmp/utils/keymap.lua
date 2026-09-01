@@ -119,15 +119,24 @@ keymap.equals = function(a, b)
   return keymap.normalize(a) == keymap.normalize(b)
 end
 
+local is_abbreviation_mode = function(mode)
+  local current = vim.api.nvim_get_mode().mode:sub(1, 1)
+  if mode == 'i' then
+    return current == 'i' or current == 'R'
+  end
+  return mode == 'c' and api.get_mode() == 'c'
+end
+
 ---Return whether text before the cursor matches a defined abbreviation.
 ---@param mode string
+---@param text? string
 ---@return boolean
-keymap.has_abbreviation = function(mode)
-  if (mode ~= 'i' and mode ~= 'c') or api.get_mode() ~= mode then
+keymap.has_abbreviation = function(mode, text)
+  if not is_abbreviation_mode(mode) then
     return false
   end
 
-  local text = vim.fn.matchstr(api.get_cursor_before_line(), [[\S\+$]])
+  text = vim.fn.matchstr(text or api.get_cursor_before_line(), [[\S\+$]])
   if text == '' then
     return false
   end
@@ -154,23 +163,126 @@ local first_key = function(lhs)
   return string.match(normalized, '^<[^>]+>') or vim.fn.strcharpart(normalized, 0, 1)
 end
 
+local split_keys = function(lhs)
+  local keys = {}
+  local normalized = keymap.normalize(lhs)
+  while normalized ~= '' do
+    local key = string.match(normalized, '^<[^>]+>') or vim.fn.strcharpart(normalized, 0, 1)
+    table.insert(keys, key)
+    normalized = vim.fn.strcharpart(normalized, vim.fn.strchars(key))
+  end
+  return keys
+end
+
+local inserted_text_keys = {
+  ['<CR>'] = '\n',
+  ['<C-M>'] = '\n',
+  ['<NL>'] = '\n',
+  ['<C-J>'] = '\n',
+  ['<Tab>'] = '\t',
+  ['<C-I>'] = '\t',
+  ['<S-Tab>'] = '\t',
+  ['<S-Space>'] = ' ',
+  ['<kEnter>'] = '\n',
+  ['<kPlus>'] = '+',
+  ['<kMinus>'] = '-',
+  ['<kMultiply>'] = '*',
+  ['<kDivide>'] = '/',
+  ['<kPoint>'] = '.',
+  ['<kComma>'] = ',',
+  ['<kEqual>'] = '=',
+  ['<k0>'] = '0',
+  ['<k1>'] = '1',
+  ['<k2>'] = '2',
+  ['<k3>'] = '3',
+  ['<k4>'] = '4',
+  ['<k5>'] = '5',
+  ['<k6>'] = '6',
+  ['<k7>'] = '7',
+  ['<k8>'] = '8',
+  ['<k9>'] = '9',
+}
+
+local inserted_text = function(lhs)
+  local name = keymap.normalize(lhs)
+  if inserted_text_keys[name] then
+    return inserted_text_keys[name]
+  end
+
+  local key = keymap.t(lhs)
+  if vim.fn.strchars(key) == 1 and vim.fn.char2nr(key) >= 0x20 then
+    return key
+  end
+end
+
 ---Return whether a key normally triggers abbreviation expansion.
 ---@param lhs string
 ---@return boolean
 keymap.triggers_abbreviation = function(lhs)
   lhs = first_key(lhs)
-  local key = keymap.t(lhs)
   local name = keymap.normalize(lhs)
 
-  if vim.tbl_contains({ '<CR>', '<C-M>', '<NL>', '<C-J>', '<Tab>', '<C-I>', '<S-Tab>', '<Esc>', '<C-[>', '<C-]>', '<S-Space>', '<kEnter>' }, name) then
+  if vim.tbl_contains({ '<Esc>', '<C-[>', '<C-]>', '<C-O>', '<S-Tab>' }, name) then
     return true
   end
 
-  return vim.fn.strchars(key) == 1 and vim.fn.char2nr(key) >= 0x20 and vim.fn.match(key, [[\k]]) ~= 0
+  local text = inserted_text(lhs)
+  return text ~= nil and vim.fn.match(text, [[\k]]) ~= 0
 end
 
-local can_expand_abbreviation = function(map)
-  return map.default and not keymap.equals(first_key(map.lhs), '<C-]>') and keymap.triggers_abbreviation(map.lhs)
+---Insert explicit abbreviation expansion at the positions where a default key
+---sequence would trigger it. This is computed at keypress time so a delayed
+---fallback cannot expand text inserted by a completion callback.
+---@param mode string
+---@param lhs string
+---@return string
+keymap.expand_abbreviations = function(mode, lhs)
+  if not is_abbreviation_mode(mode) then
+    return keymap.t(lhs)
+  end
+
+  local text = api.get_cursor_before_line()
+  local predictable = true
+  local force_expansion_checks = false
+  local active = true
+  local keys = {}
+
+  for _, key in ipairs(split_keys(lhs)) do
+    local trigger = active and keymap.triggers_abbreviation(key)
+    local explicit_expansion = keymap.equals(key, '<C-]>')
+    local abbreviation = trigger and (force_expansion_checks or (predictable and keymap.has_abbreviation(mode, text)))
+    if abbreviation and not explicit_expansion then
+      table.insert(keys, '<C-]>')
+    end
+    table.insert(keys, key)
+
+    if active and explicit_expansion then
+      if abbreviation then
+        -- The explicit expansion inserts no delimiter, so its replacement can
+        -- only be checked by preserving all later trigger points.
+        predictable = false
+        force_expansion_checks = true
+      end
+    elseif active and predictable then
+      local inserted = inserted_text(key)
+      if inserted == nil then
+        predictable = false
+      elseif abbreviation then
+        -- The expansion text is unknown, but the inserted delimiter is enough
+        -- to detect a later abbreviation built by the remaining literal keys.
+        text = inserted
+      else
+        text = text .. inserted
+      end
+    end
+
+    local name = keymap.normalize(key)
+    if vim.tbl_contains({ '<Esc>', '<C-[>', '<C-C>', '<C-O>' }, name) or (mode == 'c' and vim.tbl_contains({ '<CR>', '<C-M>', '<NL>', '<C-J>', '<kEnter>' }, name)) then
+      active = false
+    end
+  end
+
+  return keymap.t(table.concat(keys, ''))
 end
 
 ---Register keypress handler.
@@ -184,8 +296,8 @@ keymap.listen = function(mode, lhs, callback)
 
   local bufnr = existing.buffer and vim.api.nvim_get_current_buf() or -1
   keymap.set_map(bufnr, mode, lhs, function()
-    local abbreviation = can_expand_abbreviation(existing) and keymap.has_abbreviation(mode)
-    local fallback = keymap.fallback(bufnr, mode, existing, abbreviation)
+    local abbreviation_keys = existing.default and keymap.expand_abbreviations(mode, existing.lhs) or nil
+    local fallback = keymap.fallback(bufnr, mode, existing, abbreviation_keys)
     local ignore = false
     ignore = ignore or (mode == 'c' and vim.fn.getcmdtype() == '=')
     if ignore then
@@ -201,13 +313,13 @@ keymap.listen = function(mode, lhs, callback)
 end
 
 ---Fallback
----@param abbreviation? boolean
-keymap.fallback = function(bufnr, mode, map, abbreviation)
+---@param abbreviation_keys? string
+keymap.fallback = function(bufnr, mode, map, abbreviation_keys)
   return function()
     if map.expr then
       local fallback_lhs = string.format('<Plug>(cmp.u.k.fallback_expr:%s)', map.lhs)
       keymap.set_map(bufnr, mode, fallback_lhs, function()
-        return keymap.solve(bufnr, mode, map, abbreviation).keys
+        return keymap.solve(bufnr, mode, map, abbreviation_keys).keys
       end, {
         expr = true,
         noremap = map.noremap,
@@ -220,15 +332,15 @@ keymap.fallback = function(bufnr, mode, map, abbreviation)
     elseif map.callback then
       map.callback()
     else
-      local solved = keymap.solve(bufnr, mode, map, abbreviation)
+      local solved = keymap.solve(bufnr, mode, map, abbreviation_keys)
       vim.api.nvim_feedkeys(solved.keys, solved.mode, true)
     end
   end
 end
 
 ---Solve
----@param abbreviation? boolean
-keymap.solve = function(bufnr, mode, map, abbreviation)
+---@param abbreviation_keys? string
+keymap.solve = function(bufnr, mode, map, abbreviation_keys)
   local lhs = keymap.t(map.lhs)
   local rhs = keymap.t(map.rhs)
   if map.expr then
@@ -239,14 +351,10 @@ keymap.solve = function(bufnr, mode, map, abbreviation)
     end
   end
 
-  if can_expand_abbreviation(map) then
-    if abbreviation == nil then
-      abbreviation = keymap.has_abbreviation(mode)
-    end
-    if abbreviation then
-      -- `noremap` suppresses abbreviations, so explicitly expand one before a default fallback.
-      rhs = keymap.t('<C-]>') .. rhs
-    end
+  if map.default then
+    -- `noremap` suppresses abbreviations, so preserve the sequence captured at
+    -- keypress (or compute it now for direct fallback calls).
+    rhs = abbreviation_keys or keymap.expand_abbreviations(mode, map.lhs)
   end
 
   if map.noremap then
