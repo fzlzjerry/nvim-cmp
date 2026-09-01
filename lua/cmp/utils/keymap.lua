@@ -149,6 +149,20 @@ keymap.has_abbreviation = function(mode)
   return next(vim.fn.maparg(text, mode, true, true)) ~= nil
 end
 
+---Return whether a key normally triggers abbreviation expansion.
+---@param lhs string
+---@return boolean
+keymap.triggers_abbreviation = function(lhs)
+  local key = keymap.t(lhs)
+  local name = vim.fn.keytrans(key)
+
+  if vim.tbl_contains({ '<CR>', '<NL>', '<Tab>', '<S-Tab>', '<Esc>', '<C-]>', '<S-Space>', '<kEnter>' }, name) then
+    return true
+  end
+
+  return vim.fn.strchars(key) == 1 and vim.fn.char2nr(key) >= 0x20 and vim.fn.match(key, [[\k]]) ~= 0
+end
+
 ---Register keypress handler.
 keymap.listen = function(mode, lhs, callback)
   lhs = keymap.normalize(keymap.to_keymap(lhs))
@@ -212,7 +226,7 @@ keymap.solve = function(bufnr, mode, map)
     end
   end
 
-  if map.default and keymap.has_abbreviation(mode) then
+  if map.default and keymap.triggers_abbreviation(map.lhs) and keymap.has_abbreviation(mode) then
     -- `noremap` suppresses abbreviations, so explicitly expand one before a default fallback.
     rhs = keymap.t('<C-]>') .. rhs
   end
