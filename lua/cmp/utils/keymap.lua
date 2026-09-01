@@ -226,7 +226,7 @@ keymap.solve = function(bufnr, mode, map)
     end
   end
 
-  if map.default and keymap.triggers_abbreviation(map.lhs) and keymap.has_abbreviation(mode) then
+  if map.default and not keymap.equals(map.lhs, '<C-]>') and keymap.triggers_abbreviation(map.lhs) and keymap.has_abbreviation(mode) then
     -- `noremap` suppresses abbreviations, so explicitly expand one before a default fallback.
     rhs = keymap.t('<C-]>') .. rhs
   end
