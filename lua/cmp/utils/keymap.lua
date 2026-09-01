@@ -154,7 +154,7 @@ end
 ---@return boolean
 keymap.triggers_abbreviation = function(lhs)
   local key = keymap.t(lhs)
-  local name = vim.fn.keytrans(key)
+  local name = keymap.normalize(lhs)
 
   if vim.tbl_contains({ '<CR>', '<NL>', '<Tab>', '<S-Tab>', '<Esc>', '<C-]>', '<S-Space>', '<kEnter>' }, name) then
     return true

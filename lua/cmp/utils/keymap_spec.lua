@@ -126,6 +126,15 @@ describe('keymap', function()
         assert.are.same({ 2, 0 }, state.cursor)
       end)
 
+      it('#103 non-id abbreviation after keyword is not expanded', function()
+        vim.cmd('iabbrev <buffer> ;; END')
+        local fallback = keymap.fallback(0, 'i', keymap.get_map('i', '<Space>'))
+        local state = run_fallback('ifoo;;', fallback)
+        vim.cmd('iabclear <buffer>')
+        assert.are.same({ 'foo;; ' }, state.buffer)
+        assert.are.same({ 1, 6 }, state.cursor)
+      end)
+
       it('#103 unrelated abbreviation', function()
         vim.cmd('iabbrev <buffer> OTHER other')
         local solved
